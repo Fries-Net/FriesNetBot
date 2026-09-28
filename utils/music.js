@@ -1,5 +1,7 @@
 const { Readable } = require('node:stream');
 const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
 const { PermissionFlagsBits } = require('discord.js');
 const { getConfig } = require('./config');
 const {
@@ -28,6 +30,7 @@ function getMusicSettings(config = getConfig()) {
     const maxJoinRetries = Number(config.music?.voiceJoinRetries || 0);
     const retryDelayMs = Number(config.music?.voiceRetryDelayMs || 1_000);
     const maxQueueLength = Number(config.music?.maxQueueLength || 50);
+    const ytDlpCookiesPath = process.env.YTDLP_COOKIES_PATH || config.music?.ytDlpCookiesPath || 'data/youtube-cookies.txt';
 
     return {
         enabled: config.music?.enabled !== false,
@@ -36,6 +39,7 @@ function getMusicSettings(config = getConfig()) {
         readyTimeoutMs: Number.isInteger(readyTimeoutMs) && readyTimeoutMs >= 5_000 ? readyTimeoutMs : 60_000,
         maxJoinRetries: Number.isInteger(maxJoinRetries) && maxJoinRetries >= 0 ? maxJoinRetries : 0,
         retryDelayMs: Number.isInteger(retryDelayMs) && retryDelayMs >= 0 ? retryDelayMs : 1_000,
+        ytDlpCookiesPath,
     };
 }
 
@@ -85,6 +89,48 @@ function isSpotifyUrl(value) {
 function formatYtDlpError(error, stderr = '') {
     const detail = stderr.trim().split(/\r?\n/).slice(-2).join(' ').trim();
     return detail || error?.message || 'yt-dlp failed.';
+}
+
+function getYtDlpCookieStatus(settings = getMusicSettings()) {
+    const configuredPath = String(settings.ytDlpCookiesPath || '').trim();
+    if (!configuredPath) {
+        return {
+            configuredPath,
+            resolvedPath: '',
+            exists: false,
+            size: 0,
+        };
+    }
+
+    const cookiesPath = path.resolve(__dirname, '..', configuredPath);
+    const stat = fs.existsSync(cookiesPath) ? fs.statSync(cookiesPath) : null;
+
+    return {
+        configuredPath,
+        resolvedPath: cookiesPath,
+        exists: Boolean(stat?.isFile()),
+        size: stat?.isFile() ? stat.size : 0,
+    };
+}
+
+function getYtDlpCookiesArgs(settings = getMusicSettings()) {
+    const status = getYtDlpCookieStatus(settings);
+    if (!status.exists) return [];
+
+    return ['--cookies', status.resolvedPath];
+}
+
+function isYoutubeBotCheck(error) {
+    return /sign in to confirm you.?re not a bot/i.test(error?.message || '');
+}
+
+function getYoutubeBotCheckMessage() {
+    const status = getYtDlpCookieStatus();
+    if (!status.exists) {
+        return `YouTube is blocking this server as a bot, and I cannot see a cookie file at ${status.resolvedPath || status.configuredPath || 'the configured cookie path'}. Export YouTube cookies in Netscape format to data/youtube-cookies.txt and rebuild/restart the bot.`;
+    }
+
+    return `YouTube is blocking this server as a bot even though I found the cookie file (${status.size} bytes) at ${status.resolvedPath}. Re-export fresh YouTube cookies in Netscape format from a signed-in browser session, then restart the bot.`;
 }
 
 function runYtDlp(args, { collectStdout = true } = {}) {
@@ -139,8 +185,10 @@ async function getYtDlpInfo(input) {
     if (!await hasYtDlp()) return null;
 
     const target = isUrl(input) ? input : `ytsearch1:${input}`;
+    const cookiesArgs = getYtDlpCookiesArgs();
     try {
         const { stdout } = await runYtDlp([
+            ...cookiesArgs,
             '--dump-single-json',
             '--no-playlist',
             '--no-warnings',
@@ -153,16 +201,25 @@ async function getYtDlpInfo(input) {
         if (!entry?.webpage_url && !entry?.url) return null;
         return entry;
     } catch (error) {
+        const cookieStatus = getYtDlpCookieStatus();
         console.warn('[MUSIC] yt-dlp metadata lookup failed:', {
             input,
             error: error.message,
+            cookiesPath: cookieStatus.resolvedPath || cookieStatus.configuredPath,
+            cookiesFound: cookieStatus.exists,
+            cookiesSize: cookieStatus.size,
         });
+        if (isYoutubeBotCheck(error)) {
+            throw new MusicUserError(getYoutubeBotCheckMessage());
+        }
         return null;
     }
 }
 
 function createYtDlpStream(url) {
+    const cookiesArgs = getYtDlpCookiesArgs();
     const child = spawn('yt-dlp', [
+        ...cookiesArgs,
         '--no-playlist',
         '--no-warnings',
         '-f',
@@ -187,7 +244,12 @@ function createYtDlpStream(url) {
 
     child.on('close', code => {
         if (code !== 0) {
-            child.stdout.destroy(new Error(formatYtDlpError(new Error(`yt-dlp exited with ${code}`), stderr)));
+            const error = new Error(formatYtDlpError(new Error(`yt-dlp exited with ${code}`), stderr));
+            if (isYoutubeBotCheck(error)) {
+                child.stdout.destroy(new MusicUserError(getYoutubeBotCheckMessage()));
+            } else {
+                child.stdout.destroy(error);
+            }
         }
     });
 
@@ -597,6 +659,8 @@ module.exports = {
     enqueue,
     getMusicErrorMessage,
     getQueueSummary,
+    getYtDlpCookiesArgs,
+    getYtDlpCookieStatus,
     describeConnectionState,
     generateDependencyReport,
     resolvePlayableTrack,
