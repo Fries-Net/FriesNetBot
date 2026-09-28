@@ -6,3 +6,4 @@ node_modules/
 .env
 events/botDms.js
 commands/utility/start.js
+docker-compose.yml
