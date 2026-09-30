@@ -29,6 +29,11 @@
         "recordCommands": true,
         "maxEntries": 50000
     },
+    "retention": {
+        "commandUsageMaxEntries": 10000,
+        "voiceActivityMaxEntries": 5000,
+        "guildConfigAuditMaxEntries": 5000
+    },
     "tickets": {
         "channelId": "",
         "messageId": "",
@@ -100,10 +105,6 @@
         "sqlitePath": "data/bot.sqlite",
         "mysql": {
             "url": ""
-        },
-        "mongo": {
-            "url": "",
-            "database": "generalpurpose_bot"
         }
     },
     "commandSettings": {
@@ -192,12 +193,5 @@
             "removeUnmappedRoles": false,
             "groupRoleMap": []
         }
-    },
-    "Twitch": {
-        "ClientId": "",
-        "AccessToken": "",
-        "streamerId": "",
-        "discordChannelId": "",
-        "streamerName": ""
     }
 }
